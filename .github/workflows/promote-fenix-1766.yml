@@ -1,0 +1,49 @@
+name: Fenix 1.76.6 - update source only (no ZIP)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/promote-fenix-1766.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fenix-mv2-upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    name: Integrate validated Fenix 1.76.6 source
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify existing source and integrate 1.76.6 files without building ZIPs
+        run: python3 scripts/promote_1766_source.py
+      - name: Check YouTube, Quick Fix, updater tests and syntax
+        run: |
+          ln -s extension optimized
+          node tests/youtube-player-test.mjs
+          node tests/quickfix-test.mjs
+          python3 tests/test_sync_engine.py
+          rm optimized
+      - name: Commit only unpacked source and upstream cursor
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A extension .fenix/state.json
+          git diff --cached --check
+          if git diff --cached --quiet; then
+            echo 'Already up to date; no commit necessary.'
+            exit 0
+          fi
+          git commit -m 'Update Fenix MV2 Chromium source to 1.76.6, retain optimizations (no ZIP)'
+          git push origin HEAD:main
