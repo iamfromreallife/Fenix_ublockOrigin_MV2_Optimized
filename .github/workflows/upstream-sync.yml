@@ -1,0 +1,165 @@
+name: Fenix MV2 - Track official uBlock Origin beta and stable builds
+
+on:
+  schedule:
+    # Cross-repository release events do not arrive here. Poll GitHub's
+    # official releases API every 15 minutes; scheduled runs may be delayed.
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: 'Optional official gorhill/uBlock release to sync (empty = oldest unseen)'
+        required: false
+        type: string
+  push:
+    branches: [main]
+    paths:
+      - '.fenix/bootstrap/**'
+      - '.github/workflows/upstream-sync.yml'
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: fenix-mv2-upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  bootstrap:
+    name: Materialize exact Fenix optimized ZIP
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Reconstruct, verify, unpack and delete binary transfer parts
+        id: bootstrap
+        run: |
+          if [ ! -f .fenix/bootstrap/part-000.bin ]; then
+            echo 'No pending initial archive chunks; bootstrap already complete.'
+            echo 'done=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python3 scripts/bootstrap.py
+          echo 'done=true' >> "$GITHUB_OUTPUT"
+      - name: Run YouTube and Quick Fix smoke tests
+        if: steps.bootstrap.outputs.done == 'true'
+        run: |
+          ln -s extension optimized
+          node tests/youtube-player-test.mjs
+          node tests/quickfix-test.mjs
+          rm optimized
+      - name: Commit byte-identical final ZIP and complete source
+        if: steps.bootstrap.outputs.done == 'true'
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A extension dist .fenix
+          git commit -m 'Bootstrap byte-exact Fenix MV2 1.76.5b6 optimized build'
+          git push origin HEAD:main
+      - name: Publish initial GitHub release
+        if: steps.bootstrap.outputs.done == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if ! gh release view fenix-1.76.5b6 >/dev/null 2>&1; then
+            gh release create fenix-1.76.5b6 \
+              dist/Fenix_uBO_MV2_Full_Performance_Optimized.zip \
+              --title 'Fenix MV2 optimised - upstream 1.76.5b6' \
+              --notes 'Exact verified Fenix optimisation build. Chromium Manifest V2. Isolated tests pass; live MV2 playback and browser integration not tested.' \
+              --prerelease --target main
+          fi
+
+  upstream:
+    name: Sync each new official Chromium MV2 release
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Save pre-update Fenix snapshot for parity tests
+        run: |
+          test -f extension/manifest.json || { echo 'Initial bootstrap not complete'; exit 1; }
+          cp -a extension base
+      - name: Poll official releases and three-way-merge Fenix changes
+        id: sync
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REQUESTED_TAG: ${{ inputs.upstream_tag || '' }}
+        run: |
+          args=()
+          if [ -n "$REQUESTED_TAG" ]; then args+=(--tag "$REQUESTED_TAG"); fi
+          python3 scripts/sync_upstream.py "${args[@]}"
+      - name: Regression tests on newly merged source
+        if: steps.sync.outputs.updated == 'true'
+        run: |
+          ln -s extension optimized
+          node tests/youtube-player-test.mjs
+          node tests/quickfix-test.mjs
+          node tests/watch-stream-test.mjs
+          node tests/epicker-test.mjs
+          rm optimized
+      - name: Commit new source and distribution ZIP
+        if: steps.sync.outputs.updated == 'true'
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A extension dist .fenix/state.json .fenix/sync-report.json
+          git commit -m "Sync Fenix optimisations with upstream uBO ${UPSTREAM_TAG}"
+          git push origin HEAD:main
+        env:
+          UPSTREAM_TAG: ${{ steps.sync.outputs.tag }}
+      - name: Publish synchronized GitHub release
+        if: steps.sync.outputs.updated == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPSTREAM_TAG: ${{ steps.sync.outputs.tag }}
+          PRERELEASE: ${{ steps.sync.outputs.prerelease }}
+        run: |
+          if gh release view "fenix-${UPSTREAM_TAG}" >/dev/null 2>&1; then
+            echo "GitHub release already exists; not replacing the existing artifact"
+            exit 0
+          fi
+          ARGS=()
+          if [ "$PRERELEASE" = 'true' ]; then ARGS+=(--prerelease); fi
+          gh release create "fenix-${UPSTREAM_TAG}" \
+            dist/Fenix_uBO_MV2_Full_Performance_Optimized.zip \
+            --target main \
+            --title "Fenix MV2 optimised - upstream ${UPSTREAM_TAG}" \
+            --notes "Rebased against the official gorhill/uBlock Chromium MV2 release ${UPSTREAM_TAG}, preserving Fenix custom changes through three-way merging. Static validation and bundled smoke tests passed. Full live-browser regressions were not measured." \
+            "${ARGS[@]}"
+      - name: Preserve failure report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fenix-sync-failure-report
+          path: .fenix/sync-report.json
+          if-no-files-found: ignore
+      - name: Create actionable GitHub issue for failed sync
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          title='Fenix MV2 automated upstream sync needs review'
+          if [ "$(gh issue list --state open --json title --jq 'map(select(.title == "Fenix MV2 automated upstream sync needs review")) | length')" != '0' ]; then
+            echo 'Existing open issue already tracks the failure'
+            exit 0
+          fi
+          printf 'The updater stopped rather than overwriting Fenix custom code.\n\nWorkflow: %s\n\nReview the workflow logs and the conflict artifact before attempting another sync.\n' "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > /tmp/fenix-issue.txt
+          if [ -f .fenix/sync-report.json ]; then
+            printf '\nSync report:\n\n```json\n' >> /tmp/fenix-issue.txt
+            head -c 16000 .fenix/sync-report.json >> /tmp/fenix-issue.txt
+            printf '\n```\n' >> /tmp/fenix-issue.txt
+          fi
+          gh issue create --title "$title" --body-file /tmp/fenix-issue.txt

@@ -1,0 +1,160 @@
+--- a/js/resources/scriptlets.js
++++ b/js/resources/scriptlets.js
+@@ -250,44 +250,89 @@
+                     controller.enqueue(chunk);
+                     return;
+                 }
+-                let data = chunk;
++                // Retain only a possible prefix of the nine-byte needle,
++                // rather than always holding eight bytes and copying every
++                // incoming chunk. In the common case, forward the original
++                // chunk without allocating or adding extra stream writes.
+                 try {
+                     if ( held.length ) {
+-                        data = new Uint8Array(held.length + chunk.length);
+-                        data.set(held);
+-                        data.set(chunk, held.length);
++                        const needed = needle.length - held.length;
++                        const limit = Math.min(needed, chunk.length);
++                        let matched = 0;
++                        while ( matched < limit &&
++                                chunk[matched] === needle[held.length+matched] ) {
++                            matched++;
++                        }
++                        if ( matched === needed ) {
++                            controller.enqueue(substitute);
++                            if ( needed < chunk.length ) {
++                                controller.enqueue(chunk.subarray(needed));
++                            }
++                            replaced = true;
++                            held = new Uint8Array(0);
++                            try { safe.uboLog(logPrefix, 'Replaced'); } catch {}
++                            return;
++                        }
++                        if ( matched === chunk.length &&
++                             chunk.length < needed ) {
++                            // A still-incomplete prefix uses at most eight
++                            // retained bytes, regardless of chunk size.
++                            const nextHeld = new Uint8Array(
++                                held.length + chunk.length
++                            );
++                            nextHeld.set(held);
++                            nextHeld.set(chunk, held.length);
++                            held = nextHeld;
++                            return;
++                        }
++                        controller.enqueue(held);
++                        held = new Uint8Array(0);
+                     }
++
+                     let found = -1;
+-                    for ( let i = 0, end = data.length - needle.length;
++                    for ( let i = 0, end = chunk.length - needle.length;
+                           i <= end; i++ ) {
+-                        if ( data[i] !== needle[0] ) { continue; }
++                        if ( chunk[i] !== needle[0] ) { continue; }
+                         let j = 1;
+                         while ( j < needle.length &&
+-                                data[i+j] === needle[j] ) { j++; }
++                                chunk[i+j] === needle[j] ) { j++; }
+                         if ( j === needle.length ) { found = i; break; }
+                     }
+                     if ( found >= 0 ) {
+-                        if ( found ) { controller.enqueue(data.subarray(0, found)); }
++                        if ( found ) { controller.enqueue(chunk.subarray(0, found)); }
+                         controller.enqueue(substitute);
+                         const tail = found + needle.length;
+-                        if ( tail < data.length ) {
+-                            controller.enqueue(data.subarray(tail));
++                        if ( tail < chunk.length ) {
++                            controller.enqueue(chunk.subarray(tail));
+                         }
+                         replaced = true;
+-                        held = new Uint8Array(0);
+                         try { safe.uboLog(logPrefix, 'Replaced'); } catch {}
+                         return;
+                     }
+-                    const keep = Math.min(needle.length - 1, data.length);
+-                    // Allocate the tiny boundary buffer before forwarding:
+-                    // an allocation failure must not duplicate emitted bytes.
+-                    const nextHeld = data.slice(data.length - keep);
+-                    if ( data.length > keep ) {
+-                        controller.enqueue(data.subarray(0, data.length - keep));
++
++                    // The needle has no repeated leading quote character in
++                    // its proper prefixes. Only a suffix of the *current*
++                    // chunk can start the next cross-chunk match. Look back
++                    // at most eight bytes, with no full-chunk allocation.
++                    let keep = 0;
++                    for ( let n = Math.min(needle.length - 1, chunk.length);
++                          n !== 0; n-- ) {
++                        if ( chunk[chunk.length-n] !== needle[0] ) { continue; }
++                        let i = 1;
++                        while ( i < n &&
++                                chunk[chunk.length-n+i] === needle[i] ) { i++; }
++                        if ( i === n ) { keep = n; break; }
++                    }
++                    if ( keep === 0 ) {
++                        controller.enqueue(chunk);
++                    } else {
++                        const nextHeld = chunk.slice(chunk.length-keep);
++                        if ( chunk.length !== keep ) {
++                            controller.enqueue(chunk.subarray(0, chunk.length-keep));
++                        }
++                        held = nextHeld;
+                     }
+-                    held = nextHeld;
+                 } catch {
+-                    // Never discard bytes on a parser/allocation failure.
+                     passthrough = true;
+                     if ( held.length ) { controller.enqueue(held); }
+                     controller.enqueue(chunk);
+--- a/js/scriptlets/youtube-player.js
++++ b/js/scriptlets/youtube-player.js
+@@ -523,9 +523,11 @@
+         } catch {}
+     }
+ 
+-    // Two-entry bounded MRU cache: repeated callbacks avoid toString(), but
+-    // the many one-shot Promise callbacks do not fill an unbounded cache.
+-    // Unlike a WeakMap, this has no per-callback allocations on miss.
++    // Preserve the allocation-free two-entry MRU for the common immediate
++    // repeat, and weakly cache older callbacks reused by the player. An
++    // MRU-only cache repeatedly stringifies callbacks that alternate among
++    // three or more handlers; WeakMap does not retain unreachable handlers.
++    const callbackMatchCache = new WeakMap();
+     let recentCallback, recentMatches = false;
+     let previousCallback, previousMatches = false;
+     hook(Promise.prototype, 'then', {
+@@ -540,8 +542,12 @@
+                     } else if ( callback === previousCallback ) {
+                         if ( previousMatches && inScope() ) { args[0] = noop; }
+                     } else if ( inScope() ) {
+-                        const matches = apply(functionText, callback, [])
+-                            .includes('onAbnormalityDetected');
++                        let matches = callbackMatchCache.get(callback);
++                        if ( matches === undefined ) {
++                            matches = apply(functionText, callback, [])
++                                .includes('onAbnormalityDetected');
++                            callbackMatchCache.set(callback, matches);
++                        }
+                         previousCallback = recentCallback;
+                         previousMatches = recentMatches;
+                         recentCallback = callback;
+--- a/js/scriptlets/epicker.js
++++ b/js/scriptlets/epicker.js
+@@ -876,8 +876,12 @@
+     for ( const paths of candidates ) {
+         let count = Number.MAX_SAFE_INTEGER;
+         let selector = '';
+-        for ( let i = 0, n = paths.length; i < n; i++ ) {
+-            const s = paths.slice(n - i - 1).join('');
++        // Build each longer suffix from the previous suffix instead of
++        // allocating and joining a new array on every iteration.
++        let suffix = '';
++        for ( let i = paths.length - 1; i >= 0; i-- ) {
++            suffix = (paths[i] ?? '') + suffix;
++            const s = suffix;
+             const elems = document.querySelectorAll(s);
+             if ( elems.length < count ) {
+                 selector = s;
