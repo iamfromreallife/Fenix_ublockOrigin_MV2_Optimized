@@ -1,0 +1,8 @@
+{
+  "archive_sha256": "cc59465d71b5baca2b6d18a745a15c4e504c0092c0e72faeb319452014026a14",
+  "published_at": "2026-11-19T18:22:10Z",
+  "release_id": 451743883,
+  "repo": "gorhill/uBlock",
+  "upstream_tag": "1.76.5b6",
+  "upstream_zip_sha256": "87d8661e29103a95aeb163f1ddc09736428fbcab5c491e51065e97afed46dba5"
+}
