@@ -77,15 +77,19 @@ def download_asset(release: dict, directory: Path):
     return files, digest
 
 
-def release_list():
+def release_list(state):
     all_releases=[]
     for page in range(1,MAX_RELEASE_PAGES+1):
         releases=get_json(f'{API}?per_page=100&page={page}')
         if not isinstance(releases,list): raise RuntimeError('Unexpected GitHub releases response')
         all_releases.extend(releases)
-        if len(releases)<100: break
+        # Stop once the previously processed upstream release is visible.
+        # Fetching every historical release is not necessary and eventually
+        # exceeds the page bound (uBlock has over 1,000 releases).
+        if len(releases)<100 or any(r.get('tag_name') == state['upstream_tag'] for r in releases):
+            break
     else:
-        raise RuntimeError('Release pagination exceeded configured limit; no releases will be skipped silently')
+        raise RuntimeError('Release cursor is outside search window; refusing to skip unseen releases')
     return all_releases
 
 
@@ -177,7 +181,7 @@ def main():
         return
     state=json.loads(STATE.read_text())
     assert state['repo']=='gorhill/uBlock'
-    releases=release_list()
+    releases=release_list(state)
     new=next_release(releases,state,args.tag or None)
     if new is None:
         print('No new official Chromium MV2 releases')
