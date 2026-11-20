@@ -38,6 +38,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Check release-selection and merge-engine invariants
+        run: python3 tests/test_sync_engine.py
       - name: Reconstruct, verify, unpack and delete binary transfer parts
         id: bootstrap
         run: |
@@ -88,6 +90,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Check release-selection and merge-engine invariants
+        run: python3 tests/test_sync_engine.py
       - name: Save pre-update Fenix snapshot for parity tests
         run: |
           test -f extension/manifest.json || { echo 'Initial bootstrap not complete'; exit 1; }
