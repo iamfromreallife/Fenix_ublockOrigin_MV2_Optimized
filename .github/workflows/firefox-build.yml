@@ -1,0 +1,81 @@
+name: Fenix - Build native Firefox MV2 XPI
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: 'Official Firefox release tag (leave blank for newest beta/stable)'
+        required: false
+        type: string
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/build_firefox.py'
+      - '.github/workflows/firefox-build.yml'
+      - 'extension/**'
+      - '.fenix/state.json'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fenix-firefox-build
+  cancel-in-progress: false
+
+jobs:
+  firefox:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify update-engine invariants
+        run: python3 tests/test_sync_engine.py
+      - name: Build Firefox-native unsigned XPI and validate full package
+        id: build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_TAG: ${{ inputs.upstream_tag }}
+        run: |
+          python3 scripts/build_firefox.py
+          echo "file=$(jq -r .xpi_filename dist/Fenix_Firefox_Report.json)" >> "$GITHUB_OUTPUT"
+          echo "tag=$(jq -r .firefox_version dist/Fenix_Firefox_Report.json)" >> "$GITHUB_OUTPUT"
+      - name: Upload build and verification report
+        uses: actions/upload-artifact@v4
+        with:
+          name: fenix-firefox-${{ steps.build.outputs.tag }}-unsigned
+          path: |
+            dist/${{ steps.build.outputs.file }}
+            dist/Fenix_Firefox_Report.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Publish unsigned Firefox pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: fenix-firefox-${{ steps.build.outputs.tag }}
+          VERSION: ${{ steps.build.outputs.tag }}
+          XPI: dist/${{ steps.build.outputs.file }}
+        run: |
+          cat >/tmp/notes.md <<'EOF'
+          Fenix uBlock Origin, Manifest V2: Firefox-native build with the
+          currently published Fenix optimisations and YouTube fixes.
+
+          IMPORTANT: UNSIGNED XPI. Modifying the official signed Firefox
+          archive invalidates Mozilla's signature. This archive removes the
+          original signature rather than presenting it as valid.
+
+          Temporarily install at about:debugging -> This Firefox ->
+          Load Temporary Add-on -> select XPI. Persistent installation
+          on standard Firefox requires Mozilla/AMO signing.
+          Fenix uses its own add-on ID and is distinct from official uBlock Origin.
+          Avoid simultaneous filtering with both extensions unless intentional.
+          EOF
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$XPI" dist/Fenix_Firefox_Report.json --clobber
+          else
+            gh release create "$TAG" "$XPI" dist/Fenix_Firefox_Report.json \
+              --title "Fenix Firefox MV2 $VERSION (UNSIGNED)" \
+              --notes-file /tmp/notes.md --prerelease
+          fi
