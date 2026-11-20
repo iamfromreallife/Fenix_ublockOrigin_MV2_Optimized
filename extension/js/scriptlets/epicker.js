@@ -1272,13 +1272,13 @@ const pickerCSSStyle = [
 
 
 const pickerCSS = `
-[${pickerUniqueId}] {
+[${CSS.escape(pickerUniqueId)}] {
     ${pickerCSSStyle}
 }
-[${pickerUniqueId}][loaded] {
+[${CSS.escape(pickerUniqueId)}][loaded] {
     visibility: visible !important;
 }
-[${pickerUniqueId}][clicked] {
+[${CSS.escape(pickerUniqueId)}][clicked] {
     cursor: crosshair !important;
     pointer-events: none !important;
 }
