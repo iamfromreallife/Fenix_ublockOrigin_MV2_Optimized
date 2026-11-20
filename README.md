@@ -1,6 +1,6 @@
 # Fenix uBlock Origin MV2 — Optimized
 
-Custom Manifest V2 Chromium build based on upstream [gorhill/uBlock](https://github.com/gorhill/uBlock), with fixes for speed, cpu and memory usage. Also fixes specifically for youtube.
+Custom Manifest V2 Chromium build based on upstream [gorhill/uBlock](https://github.com/gorhill/uBlock), with fixes for speed, cpu and memory usage. Also contains fixes specifically made for youtube.
 
 ## Installation
 
