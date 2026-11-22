@@ -13,9 +13,9 @@ uBlock Origin is developed by Raymond Hill and contributors. This project retain
 
 # Fenix Optimized MV2 — Changes Compared with Official uBlock Origin
 
-**Base version:** uBlock Origin 1.76.5b6  
+**Base version:** uBlock Origin 1.76.6  
 **Extension architecture:** Chromium Manifest V2  
-**Comparison source:** Official `gorhill/uBlock` release tag `1.76.5b6`
+**Comparison source:** Official `gorhill/uBlock` release tag `1.76.6`
 
 ## 1. YouTube advertisement handling and player performance
 
